@@ -1,0 +1,56 @@
+spring:
+  application:
+    name: usuarios-api
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://postgres:5432/bibliogest_usuarios}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+  flyway:
+    enabled: true
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${OIDC_ISSUER_URI}
+          jwk-set-uri: ${OIDC_JWK_SET_URI}
+          audiences: bibliogest-usuarios
+bibliogest:
+  keycloak:
+    base-url: ${KEYCLOAK_BASE_URL:https://login.ksferreira.org}
+    realm: bibliogest
+    client-id: bibliogest-usuarios-admin
+    client-secret: ${KEYCLOAK_CLIENT_SECRET}
+    management-client-id: ${KEYCLOAK_MANAGEMENT_CLIENT_ID}
+    librarian-role-id: ${KEYCLOAK_LIBRARIAN_ROLE_ID}
+server:
+  port: ${SERVER_PORT:8080}
+  servlet:
+    context-path: /usuarios
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+      group:
+        readiness:
+          include: readinessState,db
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true

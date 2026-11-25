@@ -1,0 +1,94 @@
+HELP.md
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+# Configuração local e segredos de implantação
+.env
+.env.*
+!.env.example
+*.local
+deploy/.local/
+deploy/rendered/
+
+# BiblioGest: configurações locais, credenciais e backups
+.env
+.env.*
+*.local.json
+*.local.yaml
+*.local.yml
+*.local.properties
+application-local.*
+.local/
+rendered/
+.kube/
+kubeconfigs/
+kubeconfig
+kubeconfig.*
+*.kubeconfig
+.ssh/
+.aws/
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ecdsa
+id_ed25519
+.pgpass
+.pg_service.conf
+*.dump
+*.backup
+*.backup.*
+*.dump.*
+*.bak
+backups/
+dumps/
+*.sql
+*.sql.gz
+*.sql.bz2
+*.sql.xz
+*.sql.zip
+# Exemplos não contêm credenciais; migrations são código versionado.
+!.env.example
+!.env.*.example
+!.env.sample
+!.env.*.sample
+!**/*.example.json
+!**/*.example.yaml
+!**/*.example.yml
+!**/db/migration/**/*.sql
+
+# Backups do editor
+*~

@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'feature/**', 'fix/**']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          overwrite-settings: false
+      - name: Verificar código Java
+        run: mvn --batch-mode --no-transfer-progress --fail-fast validate
+
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          overwrite-settings: false
+      - name: Rodar testes
+        run: mvn --batch-mode --no-transfer-progress --fail-fast clean verify
+      - name: Resumo da cobertura
+        if: always()
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          from xml.etree import ElementTree
+          report = Path('target/site/jacoco/jacoco.xml')
+          if report.exists():
+              counters = ElementTree.parse(report).getroot().findall('counter')
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+                  summary.write('## Cobertura JaCoCo\n\nMínimo: 80% de linhas e branches.\n\n| Métrica | Cobertura |\n| --- | --- |\n')
+                  for counter in counters:
+                      if counter.get('type') in ('LINE', 'BRANCH'):
+                          covered, missed = int(counter.get('covered')), int(counter.get('missed'))
+                          summary.write(f"| {counter.get('type')} | {100 * covered / (covered + missed):.2f}% |\n")
+          PYTHON
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-and-tests
+          path: |
+            target/site/jacoco/
+            target/surefire-reports/
+          retention-days: 14
+          if-no-files-found: warn
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          overwrite-settings: false
+      - name: Empacotar a API
+        run: mvn --batch-mode --no-transfer-progress --fail-fast -DskipTests package
