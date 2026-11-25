@@ -6,15 +6,15 @@ API de administração de contas em Java 21 e Spring Boot 4.1.2. Integra o realm
 
 Prefixo público: `/usuarios/api/v1`. Todos os endpoints exigem um JWT válido, audiência `bibliogest-usuarios` e a role **ADMINISTRADOR**. LEITOR e BIBLIOTECARIO não recebem acesso administrativo.
 
-| Método | Caminho | Operação |
-| --- | --- | --- |
-| GET | `/usuarios?busca=&pagina=0&tamanho=20` | Buscar contas humanas; página começa em zero, tamanho máximo 20 |
-| GET | `/usuarios/{id}` | Consultar perfil, status, função e proteção da conta |
-| POST | `/usuarios` | Criar leitor com `nome`, `sobrenome`, `email`, `senhaTemporaria` |
-| PUT | `/usuarios/{id}/bibliotecario` | Corpo `{"valor":true}` promove; `false` remove somente BIBLIOTECARIO |
-| PUT | `/usuarios/{id}/ativo` | Ativar ou desativar com `{"valor":true/false}` |
-| POST | `/usuarios/{id}/encerrar-sessoes` | Encerrar sessões no Keycloak |
-| GET | `/auditoria?pagina=0&tamanho=20` | Consultar ações administrativas |
+| Método | Caminho                                | Operação                                                             |
+| ------ | -------------------------------------- | -------------------------------------------------------------------- |
+| GET    | `/usuarios?busca=&pagina=0&tamanho=20` | Buscar contas humanas; página começa em zero, tamanho máximo 20      |
+| GET    | `/usuarios/{id}`                       | Consultar perfil, status, função e proteção da conta                 |
+| POST   | `/usuarios`                            | Criar leitor com `nome`, `sobrenome`, `email`, `senhaTemporaria`     |
+| PUT    | `/usuarios/{id}/bibliotecario`         | Corpo `{"valor":true}` promove; `false` remove somente BIBLIOTECARIO |
+| PUT    | `/usuarios/{id}/ativo`                 | Ativar ou desativar com `{"valor":true/false}`                       |
+| POST   | `/usuarios/{id}/encerrar-sessoes`      | Encerrar sessões no Keycloak                                         |
+| GET    | `/auditoria?pagina=0&tamanho=20`       | Consultar ações administrativas                                      |
 
 A senha inicial tem entre 12 e 128 caracteres e deve ser trocada no primeiro acesso. A criação depende da política de senha do realm e da role padrão LEITOR já configurada no Keycloak. A senha não aparece na resposta nem na auditoria. O painel não oferece redefinição de senha, exclusão de usuários, criação de administradores, impersonação ou edição de clientes/realms.
 
@@ -62,5 +62,7 @@ Checkstyle verifica o código; JaCoCo exige ao menos **80% de linhas e branches*
 ## Produção
 
 O Dockerfile usa build Maven e runtime Java 21 sem root. O pod usa filesystem somente leitura, `/tmp` efêmero e não recebe token da ServiceAccount Kubernetes. Credenciais do banco vêm de `usuarios-db`; o segredo do cliente vem de `usuarios-keycloak`. IDs públicos de roles/clientes ficam em `usuarios-config`. O Ingress encaminha apenas `/usuarios/api` para o Service interno. NetworkPolicies autorizam entrada pelo Traefik e acesso do serviço ao PostgreSQL e Keycloak.
+
+O banco `bibliogest_usuarios` possui um usuário próprio com o mesmo nome. Além da NetworkPolicy, o `postgres-hba` precisa permitir esse par banco/usuário com `scram-sha-256` na rede dos pods (`10.42.0.0/16` neste cluster), antes da regra final de rejeição. Após atualizar o ConfigMap, aguarde a projeção no volume e execute `SELECT pg_reload_conf()` por uma conexão administrativa local; não é necessário reiniciar o PostgreSQL. A regra está no manifesto `deploy/k8s/10-postgres.yaml` do Acervo, que mantém os recursos compartilhados.
 
 O frontend utiliza `/usuarios/api` na mesma origem, portanto não há liberação genérica de CORS. A CSP continua sendo fornecida pelo Nginx do frontend. `.env`, dumps, chaves privadas, `target` e README não entram na imagem. Faça backup do Keycloak antes de configurar clientes/policies e preserve o banco de auditoria entre atualizações.
