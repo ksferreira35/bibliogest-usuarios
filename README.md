@@ -66,3 +66,130 @@ O Dockerfile usa build Maven e runtime Java 21 sem root. O pod usa filesystem so
 O banco `bibliogest_usuarios` possui um usuário próprio com o mesmo nome. Além da NetworkPolicy, o `postgres-hba` precisa permitir esse par banco/usuário com `scram-sha-256` na rede dos pods (`10.42.0.0/16` neste cluster), antes da regra final de rejeição. Após atualizar o ConfigMap, aguarde a projeção no volume e execute `SELECT pg_reload_conf()` por uma conexão administrativa local; não é necessário reiniciar o PostgreSQL. A regra está no manifesto `deploy/k8s/10-postgres.yaml` do Acervo, que mantém os recursos compartilhados.
 
 O frontend utiliza `/usuarios/api` na mesma origem, portanto não há liberação genérica de CORS. A CSP continua sendo fornecida pelo Nginx do frontend. `.env`, dumps, chaves privadas, `target` e README não entram na imagem. Faça backup do Keycloak antes de configurar clientes/policies e preserve o banco de auditoria entre atualizações.
+
+## Arquitetura do BiblioGest
+
+O BiblioGest é uma aplicação de gestão de bibliotecas baseada em microsserviços REST. Cada serviço tem uma responsabilidade e persistência próprias. O Keycloak centraliza identidade e autenticação; a integração entre serviços ocorre por HTTP, sem compartilhar entidades JPA ou consultar diretamente o banco de outro microsserviço.
+
+```mermaid
+flowchart LR
+  B[Navegador] -->|HTTPS| CF[Cloudflare]
+  CF --> T[Traefik no RKE2]
+  T --> F[React / Nginx]
+  T --> A[API Acervo]
+  T --> R[API Reservas]
+  T --> U[API Usuarios]
+  T --> K[Keycloak]
+  R -->|HTTP REST interno| A
+  U -->|Administracao autorizada| K
+  A --> DA[(Banco Acervo)]
+  R --> DR[(Banco Reservas)]
+  U --> DU[(Banco Auditoria)]
+  K --> DK[(Banco Keycloak)]
+  A --> PVC[(PVC Capas)]
+```
+
+Os bancos lógicos são independentes, hospedados na instância PostgreSQL do projeto. As capas ficam em volume persistente; o banco de Acervo guarda a referência. O ambiente usa Docker para construção de imagens, containerd e Kubernetes RKE2 para execução, Rancher para gerenciamento, Traefik para roteamento, Nginx para frontend e Cloudflare na borda. GitHub Actions executa validações e build; o deploy é uma operação separada. O pgAdmin é ferramenta de administração do banco, não parte do acesso do leitor.
+
+| Componente | Responsabilidade | Repositório |
+| --- | --- | --- |
+| Frontend | Catálogo, reservas, balcão e administração | [bibliogest-frontend](https://github.com/ksferreira35/bibliogest-frontend) |
+| Acervo | Obras, autores, categorias, exemplares e capas | [bibliogest-acervo](https://github.com/ksferreira35/bibliogest-acervo) |
+| Reservas | Disponibilidade e circulação dos exemplares | [bibliogest-reservas](https://github.com/ksferreira35/bibliogest-reservas) |
+| Usuários | Administração de contas e auditoria | [bibliogest-usuarios](https://github.com/ksferreira35/bibliogest-usuarios) |
+
+## Organização interna e persistência
+
+Java 21, Spring Boot, Spring Security, Spring JDBC (JdbcTemplate), PostgreSQL e Flyway. UsuarioController expõe operações administrativas, UsuarioService aplica regras de proteção e auditoria, KeycloakClient integra com o provedor e AuditoriaRepository registra os eventos. Keycloak é a fonte das contas, não o banco de auditoria.
+
+### Modelo de dados
+
+```mermaid
+erDiagram
+ AUDITORIA {
+   UUID id PK
+   VARCHAR ator
+   VARCHAR acao
+   VARCHAR alvo
+   VARCHAR estado
+   TIMESTAMPTZ criada_em
+   TIMESTAMPTZ concluida_em
+ }
+```
+
+| Coluna | Tipo e finalidade |
+| --- | --- |
+| id | UUID, PK |
+| ator | VARCHAR(64), identificador obrigatório do operador autenticado |
+| acao | VARCHAR(40), ação obrigatória |
+| alvo | VARCHAR(64), ID opcional da conta atingida |
+| estado | VARCHAR(16), obrigatório; CHECK permite PENDENTE, SUCESSO e NAO_CONFIRMADA |
+| criada_em | TIMESTAMPTZ, instante obrigatório da intenção |
+| concluida_em | TIMESTAMPTZ, instante opcional de conclusão |
+
+O índice ix_auditoria_criada ordena por data e ID. Não há FK para as contas mantidas pelo Keycloak. A migration [V1__create_auditoria.sql](src/main/resources/db/migration/V1__create_auditoria.sql) cria essa tabela. Não se guarda senha, token ou cadastro duplicado.
+
+### SQL Injection e consistência
+
+AuditoriaRepository usa JdbcTemplate com placeholders `?` nas instruções INSERT/UPDATE e paginação da consulta SELECT. Os valores de ator, ação, alvo, estado e limites são passados como parâmetros, não concatenados a instruções SQL. A validação de JWT exige audiência bibliogest-usuarios e ADMINISTRADOR.
+
+```mermaid
+sequenceDiagram
+ participant F as Painel administrativo
+ participant U as API Usuarios
+ participant D as Banco auditoria
+ participant K as Keycloak
+ F->>U: Operacao autorizada
+ U->>D: Registrar intencao PENDENTE
+ U->>K: Operacao de conta
+ K-->>U: Resultado
+ U->>D: Registrar SUCESSO ou NAO_CONFIRMADA
+ U-->>F: Resultado da operacao
+```
+
+A auditoria não forma transação distribuída com o Keycloak; falhas incertas requerem conferência antes de repetir. Permissões administrativas são limitadas às operações previstas; contas protegidas e o próprio operador não podem ser alterados pelo painel.
+
+## Matriz de permissões
+
+As roles são atribuídas no Keycloak e verificadas nas APIs. Uma conta pode acumular roles; ADMINISTRADOR por si só não equivale a LEITOR ou BIBLIOTECARIO.
+
+| Operação | LEITOR | BIBLIOTECARIO | ADMINISTRADOR |
+| --- | --- | --- | --- |
+| Consultar catálogo e disponibilidade | Sim | Sim | Se também leitor/bibliotecário |
+| Criar reserva pessoal | Sim | Se também leitor | Se também leitor |
+| Consultar reservas próprias | Sim | Sim | Se também leitor/bibliotecário |
+| Cancelar reserva aguardando retirada | Própria | Sim | Conforme outras roles |
+| Consultar balcão, registrar retirada/devolução | Não | Sim | Se também bibliotecário |
+| Cadastrar e editar acervo | Não | Sim | Se também bibliotecário |
+| Administrar contas e consultar auditoria | Não | Não | Sim |
+
+A ausência de autenticação válida leva a 401; uma role insuficiente leva a 403. Consultas a reservas de terceiros sem autorização devolvem 404 conforme o contrato. IDs técnicos identificam recursos; não substituem autorização.
+
+## Segurança em camadas
+
+| Controle | Implementação e finalidade |
+| --- | --- |
+| Autenticação | Keycloak, OAuth 2.0/OIDC, PKCE S256 no frontend; tokens JWT Bearer nas APIs. |
+| Autorização | Spring Security verifica assinatura, emissor, audiência e expiração; roles e propriedade dos recursos são avaliadas no backend. |
+| SQL Injection | Dados de entrada são tratados como valores tipados em consultas parametrizadas nos repositories, não como trechos de SQL. Validação de entrada complementa essa proteção. |
+| XSS | React renderiza conteúdo textual com escape; CSP no Nginx limita recursos autorizados no navegador. |
+| CSRF | As APIs são stateless e autorizam via Bearer explícito, não por cookie de sessão enviado automaticamente. CSRF do Spring está desativado para esse modelo. Isso não elimina os controles do Keycloak no login. |
+| CORS | APIs e frontend usam a mesma origem pública; os caminhos são roteados pelo Ingress. Vite usa proxy no desenvolvimento. Web Origins do Keycloak é configurado no cliente, sem liberação genérica. CORS não substitui autenticação. |
+| Clickjacking | Nginx envia X-Frame-Options DENY e CSP frame-ancestors none. |
+| Transporte | HTTPS público, HSTS no frontend e Cloudflare na borda. |
+| Segredos e rede | Credenciais via ambiente/Secrets, banco e serviços internos com escopo de rede e contas separadas. Swagger fica desabilitado em produção. |
+
+Esses controles reduzem riscos, mas não constituem certificação de ausência de vulnerabilidades. O projeto mantém testes defensivos, validação e revisão dos contratos. Não use produção nem credenciais reais em testes automatizados.
+
+## Skills para agentes de IA
+As skills estão em `.agents/skills/`. Cada pasta contém um `SKILL.md` com contexto, regras e orientação de manutenção. São instruções de desenvolvimento para agentes, não funcionalidades de IA em execução no sistema.
+
+| Skill | Finalidade |
+| --- | --- |
+| [usuarios-auditoria](.agents/skills/usuarios-auditoria/SKILL.md) | Manter AuditoriaRepository, operações auditadas e registro de falhas parciais da administração de usuários. |
+| [usuarios-contas-keycloak](.agents/skills/usuarios-contas-keycloak/SKILL.md) | Implementar listagem, criação de leitores, promoção de bibliotecários, estado e sessões no serviço de Usuários. |
+| [usuarios-deploy-docker](.agents/skills/usuarios-deploy-docker/SKILL.md) | Manter Docker, manifests de Usuários, prontidão e referências de configuração de produção. |
+| [usuarios-postgres-flyway](.agents/skills/usuarios-postgres-flyway/SKILL.md) | Manter persistência PostgreSQL, schema e migrations Flyway da API de usuarios. |
+| [usuarios-seguranca-jwt](.agents/skills/usuarios-seguranca-jwt/SKILL.md) | Manter autenticação e autorização defensiva Spring Security/Keycloak na API de usuarios. |
+| [usuarios-spring-boot](.agents/skills/usuarios-spring-boot/SKILL.md) | Implementar controllers, DTOs, serviços e tratamento de erros Java/Spring Boot da API de usuarios. |
+| [usuarios-testes-ci](.agents/skills/usuarios-testes-ci/SKILL.md) | Validar a API de usuarios com JUnit, MockMvc, Mockito, Checkstyle, JaCoCo e GitHub Actions. |
